@@ -10,6 +10,7 @@ Page.register_templates({
     'key': 'base',
     'title': 'Base Template',
     'path': 'base.html',
+    'preview_image': '/media/template_base_preview.png',
     'regions': (
         ('main', 'Main region'),
         ('sidebar', 'Sidebar', 'inherited'),

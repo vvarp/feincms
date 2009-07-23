@@ -193,6 +193,7 @@ class ItemEditor(admin.ModelAdmin):
             'content_types': content_types,
             'settings_fieldset': settings_fieldset,
             'top_fieldset': [model_form[field] for field in self.show_on_top],
+            'available_templates': self.model._feincms_templates,
             'media': self.media + model_form.media,
             'FEINCMS_ADMIN_MEDIA': settings.FEINCMS_ADMIN_MEDIA,
             'FEINCMS_ADMIN_MEDIA_HOTLINKING': settings.FEINCMS_ADMIN_MEDIA_HOTLINKING,

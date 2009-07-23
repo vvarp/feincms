@@ -55,6 +55,16 @@ function set_item_field_value(item, field, value) {
         item.find("."+field).val(value);
 }
 
+function set_preview_image(fname) {
+    var img = TEMPLATE_PREVIEWS[$("select#id_template_key").val()];
+    console.log(img);
+    if (img) {
+        $("img#template_preview").show().attr("src", img);
+    } else {
+        $("img#template_preview").hide();
+    }
+}
+
 function move_item (region_id, item) {
     poorify_rich(item);
     $("#"+REGION_MAP[region_id]+"_body").children("div.order-machine").append(item);
@@ -168,6 +178,11 @@ $(document).ready(function(){
         });
         return false;
     });
+
+    $("select#id_template_key").change(function(){
+        set_preview_image();
+    });
+    set_preview_image();
 
     $("input.change-template").click(function(){
         popup_bg = '<div class="popup_bg"></div>';

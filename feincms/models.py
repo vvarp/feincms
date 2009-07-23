@@ -50,13 +50,14 @@ class Template(object):
     CMS object, most commonly a page.
     """
 
-    def __init__(self, title, path, regions, key=None):
+    def __init__(self, title, path, regions, key=None, preview_image=None):
         if not key:
             key = path
 
         self.key = key
         self.title = title
         self.path = path
+        self.preview_image = preview_image
 
         def _make_region(data):
             if isinstance(data, Region):

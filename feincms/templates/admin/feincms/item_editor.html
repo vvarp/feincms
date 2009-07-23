@@ -23,6 +23,7 @@
     {% include "admin/feincms/_messages.html" %}
     IMG_DELETELINK_PATH = "{{ FEINCMS_ADMIN_MEDIA }}img/icon_deletelink.gif";
     REGION_MAP = [{% for region in object.template.regions %}'{{ region.key }}'{% if not forloop.last %}, {% endif %}{% endfor %}];
+    TEMPLATE_PREVIEWS = { {% for k,v in available_templates.items %}{{ k }}:{% if v.preview_image %}"{{ v.preview_image }}"{% else %}null{% endif %}{% if not forloop.last %}, {% endif %}{% endfor %} };
     ACTIVE_REGION = 0;
     CONTENT_NAMES = {
         {% for name, value in content_types %}'{{ value }}': '{{ name|capfirst }}'{% if not forloop.last %},{% endif %}
@@ -100,8 +101,12 @@
     {% if object_form.template_key %}
     <div class="form-row{% if field.errors %} errors{% endif %}">
         {{ object_form.template_key.label_tag }}
-        <span>{{ object_form.template_key }}{{ object_form.template_key.errors }}</span>
-        <input type="button" class="change-template" value="{% trans 'Change template' %}" />
+        <img id="template_preview" src="" style="float:left;margin-right:16px" />
+        <div style="float:left">
+            <span>{{ object_form.template_key }}{{ object_form.template_key.errors }}</span>
+            <br/>
+            <input type="button" class="change-template" value="{% trans 'Change template' %}" />
+        </div>
     </div>
     {% endif %}
 </fieldset>
