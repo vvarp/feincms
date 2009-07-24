@@ -5,11 +5,11 @@ import os
 
 from django import template
 from django.conf import settings
-from django.contrib.auth.models import User
-from django.core.exceptions import ImproperlyConfigured
+from django.contrib.auth.models import User, AnonymousUser
 from django.core import mail
+from django.core.exceptions import ImproperlyConfigured
 from django.db import models
-from django.http import Http404
+from django.http import Http404, HttpResponseBadRequest
 from django.template import TemplateDoesNotExist
 from django.template.defaultfilters import slugify
 from django.test import TestCase
@@ -25,7 +25,7 @@ from feincms.content.video.models import VideoContent
 from feincms.models import Region, Template, Base
 from feincms.module.blog.models import Entry
 from feincms.module.medialibrary.models import Category, MediaFile
-from feincms.module.page.models import Page
+from feincms.module.page.models import Page, PageAdmin
 from feincms.templatetags import feincms_tags
 from feincms.translations import short_language_code
 from feincms.utils import collect_dict_values, get_object, prefill_entry_list, \
@@ -113,7 +113,15 @@ class CMSBaseTest(TestCase):
         # this test resides in its own method because the required feedparser
         # module is not available everywhere
         from feincms.content.rss.models import RSSContent
-        ExampleCMSBase.create_content_type(RSSContent)
+        type = ExampleCMSBase.create_content_type(RSSContent)
+        obj = type()
+
+        assert 'yahoo' not in obj.render()
+
+        obj.link = 'http://rss.news.yahoo.com/rss/topstories'
+        obj.cache_content(save=False)
+
+        assert 'yahoo' in obj.render()
 
     def test_03_double_creation(self):
         # creating a content type twice is forbidden
@@ -145,6 +153,10 @@ class CMSBaseTest(TestCase):
         assert 'x-shockwave-flash' in obj.render()
 
         self.assertEqual(getattr(type, 'arbitrary_arg'), 'arbitrary_value')
+
+        obj.video = 'http://www.example.com/'
+
+        assert obj.video in obj.render()
 
     def test_07_default_render_method(self):
         class SomethingElse(models.Model):
@@ -217,9 +229,29 @@ class PagesTestCase(TestCase):
         self.create_page()
         return self.create_page('Test child page', 1)
 
+    def is_published(self, url, should_be=True):
+        try:
+            self.client.get(url)
+        except TemplateDoesNotExist, e:
+            if should_be:
+                if e.args != ('feincms_base.html',):
+                    raise
+            else:
+                if e.args != ('404.html',):
+                    raise
+
     def test_01_tree_editor(self):
         self.login()
         assert self.client.get('/admin/page/page/').status_code == 200
+
+        self.assertRedirects(self.client.get('/admin/page/page/?anything=anything'),
+                             '/admin/page/page/?e=1')
+
+        # test that the action_checkbox gets removed by changelist_view
+        PageAdmin.list_display += ('action_checkbox',)
+        assert 'action_checkbox' in PageAdmin.list_display
+        self.client.get('/admin/page/page/')
+        assert 'action_checkbox' not in PageAdmin.list_display
 
     def test_02_add_page(self):
         self.login()
@@ -232,6 +264,7 @@ class PagesTestCase(TestCase):
         self.login()
         self.assertRedirects(self.create_page(_continue=1), '/admin/page/page/1/')
         assert self.client.get('/admin/page/page/1/').status_code == 200
+        self.is_published('/admin/page/page/42/', should_be=False)
 
     def test_03_add_another(self):
         self.login()
@@ -244,6 +277,20 @@ class PagesTestCase(TestCase):
 
         page = Page.objects.get(pk=2)
         self.assertEqual(page.get_absolute_url(), '/test-page/test-child-page/')
+
+        page.active = True
+        page.save()
+
+        # page2 inherited the inactive flag from the toplevel page
+        self.assertContains(self.client.get('/admin/page/page/'), 'inherited')
+
+        page1 = Page.objects.get(pk=1)
+        page1.active = True
+        page1.save()
+
+        # icon-yes should exist two times (active flag for both pages,
+        # in_navigation is false)
+        self.assertEqual(len(self.client.get('/admin/page/page/').content.split('icon-yes')), 3)
 
     def test_05_override_url(self):
         self.create_default_page_set()
@@ -260,16 +307,40 @@ class PagesTestCase(TestCase):
         page2 = Page.objects.get(pk=2)
         self.assertEqual(page2.get_absolute_url(), '/test-child-page/')
 
+        # This goes through feincms.views.base.handler instead of the applicationcontent handler
+        self.is_published('/', False)
+        page.active = True
+        page.template_key = 'theother'
+        page.save()
+        self.is_published('/', True)
+
+        self.is_published('/preview/%d/' % page.id, True)
+
     def test_06_tree_editor_save(self):
         self.create_default_page_set()
 
+        page1 = Page.objects.get(pk=1)
+        page2 = Page.objects.get(pk=2)
+
+        page3 = Page.objects.create(title='page3', slug='page3', parent=page2)
+        page4 = Page.objects.create(title='page4', slug='page4', parent=page1)
+        page5 = Page.objects.create(title='page5', slug='page5', parent=None)
+
+        self.assertEqual(page3.get_absolute_url(), '/test-page/test-child-page/page3/')
+        self.assertEqual(page4.get_absolute_url(), '/test-page/page4/')
+        self.assertEqual(page5.get_absolute_url(), '/page5/')
+
         self.client.post('/admin/page/page/', {
             '__cmd': 'save_tree',
-            'tree': '[[2, 0, 1], [1, 2, 0]]',
+            'tree': '[[2, 0, 1], [1, 2, 1], [3, 1, 0], [4, 0, 1], [5, 4, 1]]',
             }, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
 
-        page = Page.objects.get(pk=1)
-        self.assertEqual(page.get_absolute_url(), '/test-child-page/test-page/')
+        self.assertEqual(Page.objects.get(pk=1).get_absolute_url(),
+                         '/test-child-page/test-page/')
+        self.assertEqual(Page.objects.get(pk=5).get_absolute_url(),
+                         '/page4/page5/')
+        self.assertEqual(Page.objects.get(pk=3).get_absolute_url(),
+                         '/test-child-page/test-page/page3/')
 
     def test_07_tree_editor_delete(self):
         self.create_default_page_set()
@@ -307,23 +378,18 @@ class PagesTestCase(TestCase):
             'icon-no.gif')
         self.assertEqual(Page.objects.get(pk=1).in_navigation, False)
 
+        assert isinstance(self.client.post('/admin/page/page/', {
+            '__cmd': 'toggle_boolean',
+            'item_id': 1,
+            'attr': 'notexists',
+            }, HTTP_X_REQUESTED_WITH='XMLHttpRequest'), HttpResponseBadRequest)
+
     def test_07_tree_editor_invalid_ajax(self):
         self.login()
         self.assertContains(self.client.post('/admin/page/page/', {
             '__cmd': 'notexists',
             }, HTTP_X_REQUESTED_WITH='XMLHttpRequest'),
             'Oops. AJAX request not understood.')
-
-    def is_published(self, url, should_be=True):
-        try:
-            self.client.get(url)
-        except TemplateDoesNotExist, e:
-            if should_be:
-                if e.args != ('feincms_base.html',):
-                    raise
-            else:
-                if e.args != ('404.html',):
-                    raise
 
     def test_08_publishing(self):
         self.create_default_page_set()
@@ -451,8 +517,12 @@ class PagesTestCase(TestCase):
 
         self.assertContains(self.client.get('/admin/page/page/1/'), 'no caption')
 
+        self.assertEqual(unicode(mediafile), 'MediaFile')
+
         mediafile.translations.create(caption='something',
             language_code='%s-ha' % short_language_code())
+
+        assert 'something' in unicode(mediafile)
 
         mf = page.content.main[1].mediafile
 
@@ -462,8 +532,16 @@ class PagesTestCase(TestCase):
         self.assertEqual(unicode(mf), 'something (somefile.jpg / 6 bytes)')
         self.assertEqual(mf.file_type(), 'Image')
 
+        self.assertEqual(MediaFile.objects.only_language('de').count(), 0)
+        self.assertEqual(MediaFile.objects.only_language('en').count(), 0)
+        self.assertEqual(MediaFile.objects.only_language('%s-ha' % short_language_code()).count(),
+                         1)
+
+        assert '%s-ha' % short_language_code() in mf.available_translations
+
         os.unlink(path)
 
+        # this should not raise
         self.client.get('/admin/page/page/1/')
 
         assert 'alt="something"' in page.content.main[1].render()
@@ -473,6 +551,22 @@ class PagesTestCase(TestCase):
 
         assert 'somefile.jpg' in page.content.main[2].render()
         assert '<a href="/media/somefile.jpg">thetitle</a>' in page.content.main[3].render()
+
+        page.mediafilecontent_set.update(mediafile=3)
+        # this should not raise
+        self.client.get('/admin/page/page/1/')
+
+        field = MediaFile._meta.get_field('file')
+        old = (field.upload_to, field.storage)
+        from django.core.files.storage import FileSystemStorage
+        MediaFile.reconfigure(upload_to=lambda: 'anywhere',
+                              storage=FileSystemStorage(location='/wha/', base_url='/whe/'))
+        mediafile = MediaFile.objects.get(pk=1)
+        self.assertEqual(mediafile.file.url, '/whe/somefile.jpg')
+
+        MediaFile.reconfigure(upload_to=old[0], storage=old[1])
+        mediafile = MediaFile.objects.get(pk=1)
+        self.assertEqual(mediafile.file.url, '/media/somefile.jpg')
 
     def test_11_translations(self):
         self.create_default_page_set()
@@ -493,6 +587,9 @@ class PagesTestCase(TestCase):
 
         self.assertEqual(len(page2.available_translations()), 1)
         self.assertEqual(len(page1.available_translations()), 1)
+
+        self.assertEqual(page1, page1.original_translation)
+        self.assertEqual(page1, page2.original_translation)
 
     def test_12_titles(self):
         self.create_default_page_set()
@@ -689,6 +786,26 @@ class PagesTestCase(TestCase):
         self.assertEqual(page, Page.objects.best_match_for_path(page.get_absolute_url() + 'something/hello/'))
 
         self.assertRaises(Http404, lambda: Page.objects.best_match_for_path('/blabla/blabla/', raise404=True))
+        self.assertEqual(None, Page.objects.best_match_for_path('/blabla/blabla/'))
+
+        request = Empty()
+        request.path = page.get_absolute_url()
+        request.GET = []
+        request.user = AnonymousUser()
+
+        self.assertRaises(Http404, lambda: Page.objects.for_request_or_404(request))
+        page1 = Page.objects.get(pk=1)
+        page1.active = True
+        page1.save()
+
+        self.assertEqual(page, Page.objects.for_request_or_404(request))
+
+        request.path += 'hello/'
+        self.assertEqual(page, Page.objects.best_match_for_request(request))
+
+        page_id = id(request._feincms_page)
+        p = Page.objects.from_request(request)
+        self.assertEqual(id(p), page_id)
 
     def test_20_redirects(self):
         self.create_default_page_set()
@@ -793,6 +910,10 @@ class PagesTestCase(TestCase):
         page.template_key = 'theother'
         page.save()
 
+        # Should not be published because the page has no application contents and should
+        # therefore not catch anything below it.
+        self.is_published(page1.get_absolute_url() + 'anything/', False)
+
         page.applicationcontent_set.create(
             region='main', ordering=0,
             urlconf_path='feincms.tests.applicationcontent_urls')
@@ -816,7 +937,10 @@ class PagesTestCase(TestCase):
         self.assertRaises(NotImplementedError, lambda: self.client.get(page.get_absolute_url() + 'raises/'))
 
         self.assertContains(self.client.get(page.get_absolute_url() + 'fragment/'),
-                            '<span id="something">some things</span>');
+                            '<span id="something">some things</span>')
+
+        self.assertRedirects(self.client.get(page.get_absolute_url() + 'redirect/'),
+                             page.get_absolute_url())
 
 
 Entry.register_extensions('seo', 'translations', 'seo')
@@ -866,6 +990,9 @@ class BlogTestCase(TestCase):
     def test_01_prefilled_attributes(self):
         self.create_entry()
 
+        # This should return silently
+        objects = prefill_entry_list(Entry.objects.none(), 'rawcontent_set', 'categories')
+
         objects = prefill_entry_list(Entry.objects.published(), 'rawcontent_set', 'categories')
 
         self.assertEqual(len(objects[0]._prefill_categories), 0)
@@ -894,3 +1021,9 @@ class BlogTestCase(TestCase):
         self.assertEqual(len(entries[1].available_translations()), 1)
         self.assertEqual(len(entries[2].available_translations()), 1)
         self.assertEqual(len(entries[3].available_translations()), 0)
+
+    def test_03_admin(self):
+        self.login()
+        self.create_entries()
+        assert self.client.get('/admin/blog/entry/').status_code == 200
+        assert self.client.get('/admin/blog/entry/1/').status_code == 200
